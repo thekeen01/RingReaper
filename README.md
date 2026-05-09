@@ -1,3 +1,15 @@
+# Notes on this fork
+
+**credits**
+
+this is a fork of the original code from https://github.com/MatheuZSecurity/RingReaper
+
+it incoporates the cmd_terminal addition from https://github.com/iurjscsi1101500/RingReaper/ but fixes the output of the terminal commands to be inline and insync with the command. 
+
+**Disclaimer**
+
+The fix for the cmd_terminal was AI assisted
+
 # RingReaper
 
 **RingReaper** is a simple post-exploitation agent for Linux designed for those who need to operate stealthily, minimizing the chances of being detected by EDR solutions. The idea behind this project was to leverage **io_uring**, the new asynchronous I/O interface in the Linux kernel, specifically to avoid traditional system calls that most EDRs tend to monitor or even hook.
