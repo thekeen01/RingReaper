@@ -1,8 +1,8 @@
 # Notes on this fork
 
-**still buggy**
+**hopefully fixed**
 
-the code is still buggy and giving me out of order output, I'll try and fix it
+rewrote parts of the agent.c and server.py to properly process terminal output
 
 **credits**
 
