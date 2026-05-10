@@ -1,5 +1,9 @@
 # Notes on this fork
 
+**still buggy**
+
+the code is still buggy and giving me out of order output, I'll try and fix it
+
 **credits**
 
 this is a fork of the original code from https://github.com/MatheuZSecurity/RingReaper
