@@ -52,6 +52,8 @@ Rootkit Researchers
 | `kick`        | Kill `pts` sessions (uses `opendir`, `readdir`, `kill`, `readlink`) | traditional calls + io_uring |
 | `me`          | Show PID/TTY (`getpid`, `ttyname`)                       | traditional calls + io_uring   |
 | `selfdestruct`| Delete the current binary (uses `readlink`)              | traditional calls + io_uring   |
+| `terminal`| spawns a tty, very noisy              | traditional calls + io_uring   |
+| `ls`| lists a directory (uses `opendir`,`readdir`)              | traditional calls + io_uring   |
 | `exit`        | Terminate connection and exit                            | 100% io_uring        |
 | `help`        | Display help                                             | 100% io_uring        |
 
