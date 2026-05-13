@@ -1,5 +1,20 @@
 # Notes on this fork
 
+**Notes on what's working in testing**
+
+| OS       | cmd_ls with user, group and perms                            | io_uring              |
+|---------------|----------------------------------------------------------|----------------------|
+| debian 13         | 	✔️                           | 	✔️        |
+| ubuntu 26.04         | 	✔️             | 	✔️        |
+| fedora 44         | 	✔️             | 	✔️        |
+| CentOS 10         | 	❌             | 	❌        |
+| Oracle Linux 10         | 	❌             | 	✔️        |
+
+
+**add perms and users to cmd_ls**
+
+while this makes it easier, this not only might be noisy but it also makes it so that you can't truely compile this static anymore. Moving to musl-gcc requires a compile of the liburing lib specifically for musl so I'll look into that later. Note that the printing of perms + user + group failed on Oracle Linux with a segfault so I'll either debug it or make a cmd_perms to fetch specific file permissions
+
 **add cmd_ls**
 
 this uses opendir + readdir so this will not be super stealthy. Will be fine for stuff like leastic and wazuh but not for more involved EDR. In order to fix the terminal output, this creates an artificial lag in the command output processing for all other commands as the server.py has to wait for an end of output tag. I'll try to fix it or simply revert and remove all the terminal code as it is very noisy (i.e. even auditd picks it up)
