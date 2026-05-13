@@ -11,6 +11,10 @@ Build the docker, run this where the Dockerfile is
 
 ```
 docker build -t agent-build .
+
+or
+
+podman  build -t agent-build .
 ```
 
 this will install all the relevent code and build liburing for musl
@@ -19,6 +23,10 @@ start the docker, map a local dir where you can transfer the agent and server.py
 
 ```
 docker run --rm -v ./local:/local -it agent-build
+
+or
+
+podman run --rm -v ./local:/local -it agent-build
 ```
 
 RingReaper is in /agent/RingReaper so cd there, edit agent.c for your IP + PORT and make. Then, copy agent and server.py to /local and you'll have a copy of both on your machine
