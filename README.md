@@ -7,7 +7,7 @@
 
 **Docker instuctions**
 
-Build the docker
+Build the docker, run this where the Dockerfile is
 
 ```
 docker build -t agent-build .
