@@ -1,11 +1,8 @@
 # startoff with kali
-FROM kalilinux/kali-rolling
+FROM docker.io/kalilinux/kali-rolling:latest
 
 #define envs
 ENV DEBIAN_FRONTEND=noninteractive
-
-# Add local dir so that we can map it externally
-ADD . /agent
 
 # Update package lists and install essential build tools and libraries
 # required for kernel compilation.
