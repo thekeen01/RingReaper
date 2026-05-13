@@ -1,5 +1,36 @@
 # Notes on this fork
 
+**prereqs for compiling this version of RingReaper**
+
+since I moved the compilation to musl-gcc to have a completely fully static bin to get file perms, you need to compile liburing with musl
+
+```
+git clone https://github.com/axboe/liburing.git
+cd liburing
+
+CC=musl-gcc \
+CFLAGS="\
+-isystem /usr/include/x86_64-linux-musl \
+-isystem /usr/lib/gcc/x86_64-linux-gnu/$(gcc -dumpversion)/include \
+-idirafter /usr/include/x86_64-linux-gnu \
+-idirafter /usr/include \
+" \
+./configure --prefix=/opt/liburing-musl
+
+CC=musl-gcc \
+CFLAGS="\
+-isystem /usr/include/x86_64-linux-musl \
+-isystem /usr/lib/gcc/x86_64-linux-gnu/$(gcc -dumpversion)/include \
+-idirafter /usr/include/x86_64-linux-gnu \
+-idirafter /usr/include \
+" \
+make
+
+sudo make install
+```
+
+you should be good to go to compile the agent cleanly after that
+
 **Notes on what's working in testing**
 
 | OS       | cmd_ls with user, group and perms                            | io_uring              |
@@ -7,9 +38,10 @@
 | debian 13         | 	✔️                           | 	✔️        |
 | ubuntu 26.04         | 	✔️             | 	✔️        |
 | fedora 44         | 	✔️             | 	✔️        |
-| CentOS 10         | 	❌             | 	❌        |
-| Oracle Linux 10         | 	❌             | 	✔️        |
+| CentOS 10         | 	✔️             | 	❌        |
+| Oracle Linux 10         | 	✔️             | 	✔️        |
 
+out of the box, CentOS has io_uring disabled. Once enabled, it is confirmed that the cmd_ls works fine. Compiling staticly with musl-gcc also fixed the issue of cmd_ls and perms with Oracle Linux 10 and probably all other linux where this woudl have failed
 
 **add perms and users to cmd_ls**
 
