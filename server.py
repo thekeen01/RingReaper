@@ -125,32 +125,16 @@ def remove_connection(cid, reason=""):
         else:
             notify(f"[-] Connection {cid} closed.")
 
-
 def recv_response(sock):
-    """
-    For regular (non-terminal) commands.
-    Reads until sentinel appears, connection closes, or timeout.
-    """
     data = b""
-    sock.settimeout(10.0)
-    try:
-        while True:
-            try:
-                chunk = sock.recv(4096)
-            except socket.timeout:
-                break
-            if not chunk:
-                return data, False
-            data += chunk
-            if SENTINEL in data:
-                data = data.split(SENTINEL)[0]
-                break
-    except Exception:
-        pass
-    finally:
-        sock.settimeout(None)
+    while True:
+        chunk = sock.recv(4096)
+        if not chunk:
+            return data, False
+        data += chunk
+        if len(chunk) < 4096:
+            break
     return data, True
-
 
 def recv_until_quiet(sock, timeout_first=5.0, timeout_idle=0.3):
     """
