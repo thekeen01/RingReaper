@@ -47,7 +47,7 @@ you should be good to go to compile the agent cleanly after that
 | CentOS 10         | 	✔️             | 	❌        |
 | Oracle Linux 10         | 	✔️             | 	✔️        |
 
-out of the box, CentOS has io_uring disabled. Once enabled, it is confirmed that the cmd_ls works fine. Compiling staticly with musl-gcc also fixed the issue of cmd_ls and perms with Oracle Linux 10 and probably all other linux where this woudl have failed
+out of the box, CentOS has io_uring disabled. Once enabled, it is confirmed that the cmd_ls works fine. Compiling staticly with musl-gcc also fixed the issue of cmd_ls and perms with Oracle Linux 10 and probably all other linux where this would have failed
 
 **add perms and users to cmd_ls**
 
