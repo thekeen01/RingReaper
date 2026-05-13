@@ -55,7 +55,7 @@ while this makes it easier, this not only might be noisy but it also makes it so
 
 **add cmd_ls**
 
-this uses opendir + readdir so this will not be super stealthy. Will be fine for stuff like leastic and wazuh but not for more involved EDR. In order to fix the terminal output, this creates an artificial lag in the command output processing for all other commands as the server.py has to wait for an end of output tag. I'll try to fix it or simply revert and remove all the terminal code as it is very noisy (i.e. even auditd picks it up)
+this uses opendir + readdir so this will not be super stealthy. Will be fine for stuff like elastic and wazuh but not for more involved EDR. In order to fix the terminal output, this creates an artificial lag in the command output processing for all other commands as the server.py has to wait for an end of output tag. I'll try to fix it or simply revert and remove all the terminal code as it is very noisy (i.e. even auditd picks it up)
 
 **hopefully fixed**
 
