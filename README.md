@@ -4,6 +4,7 @@
 
 - make a small loader that will load the actual agent
 - add a way to load and execute bof or elf in via the agent
+- make the build chain into a docker so that people don't have to install a lot of things on their boxes
 
 **prereqs for compiling this version of RingReaper**
 
