@@ -4,7 +4,24 @@
 
 - make a small loader that will load the actual agent
 - add a way to load and execute bof or elf in via the agent
-- make the build chain into a docker so that people don't have to install a lot of things on their boxes
+
+**Docker instuctions**
+
+Build the docker
+
+```
+docker build -t agent-build .
+```
+
+this will install all the relevent code and build liburing for musl
+
+start the docker, map a local dir where you can transfer the agent and server.py
+
+```
+docker run --rm -v ./local:/local -it agent-build
+```
+
+RingReaper is in /agent/RingReaper so cd there, edit agent.c for your IP + PORT and make. Then, copy agent and server.py to /local and you'll have a copy of both on your machine
 
 **prereqs for compiling this version of RingReaper**
 
