@@ -1,5 +1,9 @@
 # Notes on this fork
 
+**Observations**
+
+I think that RingReaper is a great proof of concept but I am not 100% sold on how useful it can be. Given that RHEL 10 and CentOS 10 disable io_uring by default, this does limit it's usefullness in a corporate setting as RHEL at least is widely used.
+
 **todo**
 
 - make a small loader that will load the actual agent
