@@ -1,5 +1,10 @@
 # Notes on this fork
 
+**todo**
+
+- make a small loader that will load the actual agent
+- add a way to load and execute bof or elf in via the agent
+
 **prereqs for compiling this version of RingReaper**
 
 since I moved the compilation to musl-gcc to have a completely fully static bin to get file perms, you need to compile liburing with musl
